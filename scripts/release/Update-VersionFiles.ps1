@@ -15,7 +15,6 @@
     - package-lock.json (version and packages[""].version)
     - extension/templates/package.template.json
     - .github/plugin/marketplace.json (metadata.version and plugins[*].version)
-    - plugins/*/.github/plugin/plugin.json (glob)
     - .release-please-manifest.json
 
     After updating the files, runs 'npm run plugin:generate' to regenerate
@@ -101,9 +100,14 @@ function Update-JsonVersion {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         throw "File is empty or whitespace-only: $FilePath"
     }
+    $hadFinalNewline = $raw.EndsWith("`n", [System.StringComparison]::Ordinal)
     $json = $raw | ConvertFrom-Json @convertParams
     $json = & $Transform $json
-    $json | ConvertTo-Json -Depth 20 | Set-Content -Path $FilePath -Encoding UTF8 -NoNewline
+    $content = $json | ConvertTo-Json -Depth 20
+    if ($hadFinalNewline) {
+        $content += "`n"
+    }
+    $content | Set-Content -Path $FilePath -Encoding UTF8 -NoNewline
     Write-Host "  ✅ Updated $Description" -ForegroundColor Green
 }
 
@@ -152,30 +156,20 @@ if ($MyInvocation.InvocationName -ne '.') {
                 $j.metadata.version = $Version
                 foreach ($plugin in $j.plugins) {
                     $plugin.version = $Version
+                    if ($plugin.source -is [PSCustomObject] -and $plugin.source.PSObject.Properties.Name -contains 'ref') {
+                        $plugin.source.ref = "plugins-v$Version"
+                    }
                 }
                 $j
             }
 
-        # 5. plugins/*/.github/plugin/plugin.json (glob)
-        $pluginJsonFiles = Get-ChildItem -Path (Join-Path $root "plugins") `
-            -Filter "plugin.json" -Recurse -Force `
-            | Where-Object { $_.FullName -match 'plugins[/\\][^/\\]+[/\\]\.github[/\\]plugin[/\\]plugin\.json$' }
-
-        foreach ($pluginFile in $pluginJsonFiles) {
-            $relativePath = $pluginFile.FullName.Replace($root, '').TrimStart('/\')
-            Update-JsonVersion `
-                -FilePath $pluginFile.FullName `
-                -Description $relativePath `
-                -Transform { param($j) $j.version = $Version; $j }
-        }
-
-        # 6. .release-please-manifest.json
+        # 5. .release-please-manifest.json
         Update-JsonVersion `
             -FilePath (Join-Path $root ".release-please-manifest.json") `
             -Description ".release-please-manifest.json" `
             -Transform { param($j) $j.'.' = $Version; $j }
 
-        # 7. Regenerate plugin outputs
+        # 6. Regenerate plugin outputs
         if (-not $SkipPluginGenerate) {
             Write-Host "  🔧 Running npm run plugin:generate ..." -ForegroundColor Cyan
             Push-Location $root
